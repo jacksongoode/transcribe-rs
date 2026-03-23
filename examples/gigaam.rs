@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use transcribe_rs::whisper_cpp::{WhisperEngine, WhisperInferenceParams};
+use transcribe_rs::onnx::gigaam::GigaAMModel;
+use transcribe_rs::onnx::Quantization;
+use transcribe_rs::SpeechModel;
 
 fn get_audio_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>> {
     let reader = hound::WavReader::open(path)?;
@@ -13,31 +15,52 @@ fn get_audio_duration(path: &PathBuf) -> Result<f64, Box<dyn std::error::Error>>
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     env_logger::init();
 
-    let model_path = PathBuf::from("models/whisper-medium-q4_1.bin");
-    let wav_path = PathBuf::from("samples/dots.wav");
+    let args: Vec<String> = std::env::args().collect();
+    let positional: Vec<&String> = args
+        .iter()
+        .skip(1)
+        .filter(|a| !a.starts_with("--"))
+        .collect();
+
+    let int8 = args.iter().any(|a| a == "--int8");
+    let model_path = PathBuf::from(
+        positional
+            .first()
+            .map(|s| s.as_str())
+            .unwrap_or("models/gigaam-v3"),
+    );
+    let wav_path = PathBuf::from(
+        positional
+            .get(1)
+            .map(|s| s.as_str())
+            .unwrap_or("samples/russian.wav"),
+    );
 
     let audio_duration = get_audio_duration(&wav_path)?;
     println!("Audio duration: {:.2}s", audio_duration);
 
-    println!("Using Whisper engine");
-    println!("Loading model: {:?}", model_path);
+    let quantization = if int8 {
+        Quantization::Int8
+    } else {
+        Quantization::FP32
+    };
+
+    println!("Using GigaAM v3 engine");
+    println!(
+        "Loading model: {:?} (quantization: {})",
+        model_path,
+        if int8 { "int8" } else { "fp32" }
+    );
 
     let load_start = Instant::now();
-    let mut engine = WhisperEngine::load(&model_path)?;
+    let mut model = GigaAMModel::load(&model_path, &quantization)?;
     let load_duration = load_start.elapsed();
     println!("Model loaded in {:.2?}", load_duration);
 
     println!("Transcribing file: {:?}", wav_path);
     let transcribe_start = Instant::now();
 
-    let samples = transcribe_rs::audio::read_wav_samples(&wav_path)?;
-    let result = engine.transcribe_with(
-        &samples,
-        &WhisperInferenceParams {
-            initial_prompt: Some("This is a conversation about technology and AI.".to_string()),
-            ..Default::default()
-        },
-    )?;
+    let result = model.transcribe_file(&wav_path, &transcribe_rs::TranscribeOptions::default())?;
     let transcribe_duration = transcribe_start.elapsed();
     println!("Transcription completed in {:.2?}", transcribe_duration);
 
